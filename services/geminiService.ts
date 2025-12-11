@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { Course } from '../types';
 
 export const streamCourseAdvice = async (
@@ -6,8 +6,16 @@ export const streamCourseAdvice = async (
   history: {role: string, text: string}[],
   courses: Course[]
 ) => {
-  // Initialize here to safely access process.env at runtime
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = process.env.API_KEY;
+  
+  // Check for missing key or the literal string "undefined" injected by the bundler
+  if (!apiKey || apiKey === 'undefined' || apiKey === '"undefined"') {
+    console.error("Deepmetrics Error: API_KEY is missing. Please check your Netlify environment variables.");
+    throw new Error("Service configuration error: API Key missing. Please ensure API_KEY is set in Netlify Site Settings.");
+  }
+
+  // Initialize with the safe key using the stable SDK
+  const genAI = new GoogleGenerativeAI(apiKey);
   
   const courseContext = JSON.stringify(courses.map(c => ({
     title: c.title,
@@ -34,23 +42,25 @@ export const streamCourseAdvice = async (
   `;
 
   try {
-    const chat = ai.chats.create({
-      model: 'gemini-2.5-flash',
-      config: {
-        systemInstruction: systemInstruction,
-        temperature: 0.7,
-      },
+    // Use gemini-1.5-flash as the standard stable model
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-1.5-flash',
+      systemInstruction: systemInstruction
+    });
+
+    const chat = model.startChat({
       history: history.map(h => ({
-        role: h.role,
+        role: h.role === 'model' ? 'model' : 'user',
         parts: [{ text: h.text }]
-      }))
+      })),
+      generationConfig: {
+        temperature: 0.7,
+      }
     });
 
-    const resultStream = await chat.sendMessageStream({
-      message: userMessage
-    });
+    const result = await chat.sendMessageStream(userMessage);
 
-    return resultStream;
+    return result.stream;
 
   } catch (error) {
     console.error("Gemini API Error:", error);

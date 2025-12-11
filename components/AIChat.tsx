@@ -41,7 +41,8 @@ export const AIChat: React.FC<AIChatProps> = ({ courses }) => {
       
       let fullText = '';
       for await (const chunk of stream) {
-        const chunkText = chunk.text || '';
+        // In @google/generative-ai, chunk.text() is a function
+        const chunkText = chunk.text();
         fullText += chunkText;
         
         setMessages(prev => {
@@ -52,6 +53,7 @@ export const AIChat: React.FC<AIChatProps> = ({ courses }) => {
       }
 
     } catch (error) {
+      console.error(error);
       setMessages(prev => [...prev, { role: 'model', text: "I'm having trouble connecting to the institute's database right now. Please try again later." }]);
     } finally {
       setIsTyping(false);

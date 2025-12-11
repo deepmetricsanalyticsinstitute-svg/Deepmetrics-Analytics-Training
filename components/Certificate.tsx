@@ -2,6 +2,13 @@ import React, { useRef, useState, useEffect } from 'react';
 import { Course, User } from '../types';
 import { Button } from './Button';
 
+// Add type definition for the external library to prevent build errors
+declare global {
+  interface Window {
+    html2pdf: any;
+  }
+}
+
 interface CertificateProps {
   user: User;
   course: Course;
@@ -268,10 +275,8 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
       };
 
       try {
-          // @ts-ignore
           if (window.html2pdf) {
              await new Promise(resolve => setTimeout(resolve, 800));
-             // @ts-ignore
              await window.html2pdf().set(opt).from(clone).save();
           } else {
               window.print();
