@@ -104,11 +104,17 @@ const App: React.FC = () => {
   };
 
   const handleAuthSuccess = (name: string, email: string, isAdmin: boolean) => {
-    let targetUser = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+    const existingUser = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
 
-    if (!targetUser) {
+    if (currentView === View.REGISTER) {
+        if (existingUser) {
+            addNotification('This email is already registered. Please sign in.', 'info');
+            setCurrentView(View.LOGIN);
+            return;
+        }
+
         // Create new user if not found
-        targetUser = {
+        const newUser: User = {
             id: Date.now().toString(),
             name,
             email,
@@ -118,12 +124,24 @@ const App: React.FC = () => {
             courseProgress: {},
             role: isAdmin ? 'admin' : 'student'
         };
-        const newAllUsers = [...allUsers, targetUser];
+        const newAllUsers = [...allUsers, newUser];
         saveAllUsers(newAllUsers);
         addNotification(`Welcome to Deepmetrics, ${name}!`, 'success');
-    } else {
-        // Update role if logging in as admin via secret email
+        
+        setUser(newUser);
+        localStorage.setItem('deepmetric_user', JSON.stringify(newUser));
+        setCurrentView(View.COURSES);
+
+    } else { // LOGIN
+        if (!existingUser) {
+            addNotification('No account found. Please register to create an account.', 'info');
+            return;
+        }
+
+        let targetUser = { ...existingUser };
         let updated = false;
+
+        // Update role if logging in as admin via secret email
         if (isAdmin && targetUser.role !== 'admin') {
             targetUser.role = 'admin';
             updated = true;
@@ -135,16 +153,15 @@ const App: React.FC = () => {
         }
 
         if (updated) {
-             targetUser = { ...targetUser }; // Create new reference
-             const newAllUsers = allUsers.map(u => u.id === targetUser!.id ? targetUser! : u);
+             const newAllUsers = allUsers.map(u => u.id === targetUser.id ? targetUser : u);
              saveAllUsers(newAllUsers);
         }
         addNotification(`Welcome back, ${targetUser.name}!`, 'success');
+        
+        setUser(targetUser);
+        localStorage.setItem('deepmetric_user', JSON.stringify(targetUser));
+        setCurrentView(View.COURSES);
     }
-
-    setUser(targetUser);
-    localStorage.setItem('deepmetric_user', JSON.stringify(targetUser));
-    setCurrentView(View.COURSES);
   };
 
   const handleLogout = () => {

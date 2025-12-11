@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Course, User } from '../types';
 import { Button } from './Button';
+import { cleanUpSignatureWithAI } from '../services/geminiService';
 
 // Add type definition for the external library to prevent build errors
 declare global {
@@ -32,6 +33,12 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [downloadQuality, setDownloadQuality] = useState<'standard' | 'high'>('high');
   
+  // ID Editing State
+  const [isEditingId, setIsEditingId] = useState(false);
+  const [customId, setCustomId] = useState<string | null>(null);
+  const [tempId, setTempId] = useState('');
+  const [idError, setIdError] = useState<string | null>(null);
+
   // Cropping State
   const [showCropModal, setShowCropModal] = useState(false);
   const [originalImage, setOriginalImage] = useState<string | null>(null);
@@ -44,6 +51,12 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
   const [interactionMode, setInteractionMode] = useState<'move' | 'resize' | null>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [initialBox, setInitialBox] = useState({ x: 0, y: 0, width: 0, height: 0 });
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [removeBackground, setRemoveBackground] = useState(true);
+  
+  // AI State
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [isAiEnhanced, setIsAiEnhanced] = useState(false);
   
   const imgRef = useRef<HTMLImageElement>(null);
   
@@ -60,7 +73,7 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
   const isAdmin = user.role === 'admin';
 
   // Generate a deterministic unique ID
-  const certificateId = React.useMemo(() => {
+  const generatedId = React.useMemo(() => {
     const str = `${user.id}-${course.id}-${user.email}`;
     let hash = 5381;
     for (let i = 0; i < str.length; i++) {
@@ -76,15 +89,50 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
     return `DMAI-${new Date().getFullYear()}-${code.substring(0,4)}-${code.substring(4,8)}-${code.substring(8,12)}`;
   }, [user.id, course.id, user.email]);
 
+  const displayId = customId || generatedId;
+
+  // ID Validation Logic
+  const handleIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = e.target.value.toUpperCase();
+      setTempId(val);
+      
+      // Regex: DMAI-YYYY-XXXX-XXXX-XXXX
+      const regex = /^DMAI-\d{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+      
+      if (!regex.test(val)) {
+          setIdError('Format must be DMAI-YYYY-XXXX-XXXX-XXXX');
+      } else {
+          setIdError(null);
+      }
+  };
+
+  const saveId = () => {
+      if (!idError && tempId) {
+          setCustomId(tempId);
+          setIsEditingId(false);
+      }
+  };
+
+  const cancelEditId = () => {
+      setIsEditingId(false);
+      setIdError(null);
+  };
+
+  const startEditId = () => {
+      setTempId(displayId);
+      setIsEditingId(true);
+  };
+
   const logoUrl = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2MDAgMTUwIiB3aWR0aD0iNjAwIiBoZWlnaHQ9IjE1MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnb2xkIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjRkNEMzREIi8+PHN0b3Agb2Zmc2V0PSI1MCUiIHN0b3AtY29sb3I9IiNGNTlFMEIiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNCNDUzMDkiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgxMCwgMTApIj48cGF0aCBkPSJNMjAsMTAgTDcwLDEwIEMxMDAsMTAgMTIwLDMwIDEyMCw2NSBDMTIwLDEwMCAxMDAsMTIwIDcwLDEyMCBMMjAsMTIwIFogTTM1LDI1IEwzNSwxMDUgTDcwLDEwNSBDOTAsMTA1IDEwNSw5MCAxMDUsNjUgQzEwNSw0MCA5MCwyNSA3MCwyNSBaIiBmaWxsPSJ1cmwoI2dvbGQpIi8+PHJlY3QgeD0iNDIiIHk9IjcwIiB3aWR0aD0iMTAiIGhlaWdodD0iMzUiIHJ4PSIxIiBmaWxsPSJ1cmwoI2dvbGQpIi8+PHJlY3QgeD0iNTgiIHk9IjU1IiB3aWR0aD0iMTAiIGhlaWdodD0iNTAiIHJ4PSIxIiBmaWxsPSJ1cmwoI2dvbGQpIi8+PHJlY3QgeD0iNzQiIHk9IjQwIiB3aWR0aD0iMTAiIGhlaWdodD0iNjUiIHJ4PSIxIiBmaWxsPSJ1cmwoI2dvbGQpIi8+PGNpcmNsZSBjeD0iNDciIGN5PSI3MCIgcj0iNCIgZmlsbD0idXJsKCNnb2xkKSIvPjxjaXJjbGUgY3g9IjYzIiBjeT0iNTUiIHI9IjQiIGZpbGw9InVybCgjZ29sZCkiLz48Y2lyY2xlIGN4PSI3OSIgY3k9IjQwIiByPSI0IiBmaWxsPSJ1cmwoI2dvbGQpIi8+PHBvbHlsaW5lIHBvaW50cz0iNDcsNzAgNjMsNTUgNzksNDAgMTA1LDIwIiBmaWxsPSJub25lIiBzdHJva2U9InVybCgjZ29sZCkiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PGNpcmNsZSBjeD0iMTA1IiBjeT0iMjAiIHI9IjQiIGZpbGw9InVybCgjZ29sZCkiLz48L2c+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTQwLCAxNSkiPjx0ZXh0IHg9IjAiIHk9Ijc1IiBmb250LWZhbWlseT0ic2VyaWYiIGZvbnQtd2VpZ2h0PSJib2xkIiBmb250LXNpemU9Ijg1IiBmaWxsPSIjMWUxYjRiIj5EZWVwbWV0cmljczwvdGV4dD48dGV4dCB4PSI1IiB5PSIxMDUiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXdlaWdodD0iYm9sZCIgZm9udC1zaXplPSIyMiIgbGV0dGVyLXNwYWNpbmc9IjUiIGZpbGw9IiNCNDUzMDkiPkFOQUxZVElDUyBJTlNUSVRVVEU8L3RleHQ+PC9nPjwvc3ZnPg==";
   const noiseTexture = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIj48ZmlsdGVyIGlkPSJub2lzZSI+PGZlVHVyYnVsZW5jZSB0eXBlPSJmcmFjdGFsTm9pc2UiIGJhc2VGcmVxdWVuY3k9IjAuNjUiIG51bU9jdGF2ZXM9IjMiIHN0aXRjaFRpbGVzPSJzdGl0Y2giLz48L2ZpbHRlcj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWx0ZXI9InVybCgjbm9pc2UpIiBvcGFjaXR5PSIwLjQiLz48L3N2Zz4=";
-  const dotPattern = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+PGNpcmNsZSBjeD0iMiIgY3k9IjIiIHI9IjEiIGZpbGw9InJnYmEoMCwwLDAsMC4wNSkiLz48L3N2Zz4=";
+  const dotPattern = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIj48ZmlsdGVyIGlkPSJub2lzZSI+PGZlVHVyYnVsZW5jZSB0eXBlPSJmcmFjdGFsTm9pc2UiIGJhc2VGcmVxdWVuY3k9IjAuNjUiIG51bU9jdGF2ZXM9IjMiIHN0aXRjaFRpbGVzPSJzdGl0Y2giLz48L2ZpbHRlcj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWx0ZXI9InVybCgjbm9pc2UpIiBvcGFjaXR5PSIwLjQiLz48L3N2Zz4="; // Fallback
   
-  // Theme Watermarks
-  const classicWatermark = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTAwIiBoZWlnaHQ9IjUwMCIgdmlld0JveD0iMCAwIDUwMCA1MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+ICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiMwMDAiIHN0cm9rZS13aWR0aD0iMSI+ICAgIDxjaXJjbGUgY3g9IjI1MCIgY3k9IjI1MCIgcj0iMjAwIiBvcGFjaXR5PSIwLjMiLz4gICAgPGNpcmNsZSBjeD0iMjUwIiBjeT0iMjUwIiByPSIxODAiIG9wYWNpdHk9IjAuMyIvPiAgICA8cGF0aCBkPSJNMjUwIDUwIEwyNTAgNDUwIE01MCAyNTAgTDQ1MCAyNTAgTTEwOCAxMDggTDM5MiAzOTIgTTEwOCAzOTIgTDM5MiAxMDgiIG9wYWNpdHk9IjAuMiIvPiAgICA8Y2lyY2xlIGN4PSIyNTAiIGN5PSIyNTAiIHI9IjEwMCIgb3BhY2l0eT0iMC4yIi8+ICAgIDxwYXRoIGQ9Ik0yNTAgMTUwIFEzNTAgMjUwIDI1MCAzNTAgQTE1MCAyNTAgMjUwIDE1MCIgb3BhY2l0eT0iMC4yIi8+ICAgIDxwYXRoIGQ9Ik0xNTAgMjUwIFEyNTAgMTUwIDM1MCAyNTAgQTI1MCAzNTAgMTUwIDI1MCIgb3BhY2l0eT0iMC4yIi8+ICA8L2c+PC9zdmc+";
-  const modernWatermark = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTAwIiBoZWlnaHQ9IjUwMCIgdmlld0JveD0iMCAwIDUwMCA1MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+ICA8ZGVmcz4gICAgPHBhdHRlcm4gaWQ9Im1vZGVybkdyaWQiIHg9IjAiIHk9IjAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgcGF0dGVyblVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+ICAgICAgPHBhdGggZD0iTSA1MCAwIEwgMCAwIDAgNTAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIwLjUiIG9wYWNpdHk9IjAuMyIvPiAgICAgIDxjaXJjbGUgY3g9IjAiIGN5PSIwIiByPSIxIiBmaWxsPSIjMDAwIiBvcGFjaXR5PSIwLjUiLz4gICAgPC9wYXR0ZXJuPiAgPC9kZWZzPiAgPHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsbD0idXJsKCNtb2Rlcm5HcmlkKSIgLz4gIDxwYXRoIGQ9Ik0wIDUwMCBMNTAwIDAiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIwLjEiLz4gIDxjaXJjbGUgY3g9IjQwMCIgY3k9IjEwMCIgcj0iNTAiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLXdpZHRoPSIxIiBmaWxsPSJub25lIiBvcGFjaXR5PSIwLjEiLz48L3N2Zz4=";
-  const elegantWatermark = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTAwIiBoZWlnaHQ9IjUwMCIgdmlld0JveD0iMCAwIDUwMCA1MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+ICA8ZyBmaWxsPSJub25lIiBzdHJva2U9IiMwMDAiIHN0cm9rZS13aWR0aD0iMSIgb3BhY2l0eT0iMC4yIj4gICAgICA8IS0tIFN0eWxpemVkIExhdXJlbCBXcmVhdGggYXBwcm94aW1hdGlvbiAtLT4gICAgICA8cGF0aCBkPSJNMTUwIDQwMCBDIDEwMCAzMDAsIDEwMCAxNTAsIDI1MCAxMDAiIC8+ICAgICAgPHBhdGggZD0iTTM1MCA0MDAgQyA0MDAgMzAwLCA0MDAgMTUwIDI1MCAxMDAiIC8+ICAgICAgPCEtLSBMZWF2ZXMgLS0+ICAgICAgPHBhdGggZD0iTTE1MCAzNTAgTDEzMCAzNDAgTTE2MCAzMDAgTDE0MCAyOTAgTTE3MCAyNTAgTDE1MCAyNDAiIC8+ICAgICAgPHBhdGggZD0iTTM1MCAzNTAgTDM3MCAzNDAgTTM0MCAzMDAgTDM2MCAyOTAgTTMzMCAyNTAgTDM1MCAyNDAiIC8+ICA8L2c+PC9zdmc+";
+  // Theme Watermarks - High DPI / Vector Optimized
+  const classicWatermark = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA4MDAgODAwIj48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSg0MDAsNDAwKSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjQjQ5MTI2IiBzdHJva2Utd2lkdGg9IjEiIG9wYWNpdHk9IjAuMSI+PGNpcmNsZSByPSIzNTAiIHN0cm9rZS13aWR0aD0iMiIvPjxjaXJjbGUgcj0iMzMwIiBzdHJva2UtZGFzaGFycmF5PSI0IDQiLz48cGF0aCBkPSJNMC0zMDAgUTE1MC0zMDAgMTUwLTE1MCBUMCAwIFQtMTUwLTE1MCBUMC0zMDAiIHRyYW5zZm9ybT0icm90YXRlKDApIi8+PHBhdGggZD0iTTAtMzAwIFExNTAtMzAwIDE1MC0xNTAgVDAgMCBULTE1MC0xNTAgVDAtMzAwIiB0cmFuc2Zvcm09InJvdGF0ZSg0NSkiLz48cGF0aCBkPSJNMC0zMDAgUTE1MC0zMDAgMTUwLTE1MCBUMCAwIFQtMTUwLTE1MCBUMC0zMDAiIHRyYW5zZm9ybT0icm90YXRlKDkwKSIvPjxwYXRoIGQ9Ik0wLTMwMCBRMTUwLTMwMCAxNTAtMTUwIFQwIDAgVC0xNTAtMTUwIFQwLTMwMCIgdHJhbnNmb3JtPSJyb3RhdGUoMTM1KSIvPjxwYXRoIGQ9Ik0wLTMwMCBRMTUwLTMwMCAxNTAtMTUwIFQwIDAgVC0xNTAtMTUwIFQwLTMwMCIgdHJhbnNmb3JtPSJyb3RhdGUoMTgwKSIvPjxwYXRoIGQ9Ik0wLTMwMCBRMTUwLTMwMCAxNTAtMTUwIFQwIDAgVC0xNTAtMTUwIFQwLTMwMCIgdHJhbnNmb3JtPSJyb3RhdGUoMjI1KSIvPjxwYXRoIGQ9Ik0wLTMwMCBRMTUwLTMwMCAxNTAtMTUwIFQwIDAgVC0xNTAtMTUwIFQwLTMwMCIgdHJhbnNmb3JtPSJyb3RhdGUoMjcwKSIvPjxwYXRoIGQ9Ik0wLTMwMCBRMTUwLTMwMCAxNTAtMTUwIFQwIDAgVC0xNTAtMTUwIFQwLTMwMCIgdHJhbnNmb3JtPSJyb3RhdGUoMzE1KSIvPjwvZz48L3N2Zz4=";
+  const modernWatermark = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgdmlld0JveD0iMCAwIDgwMCA2MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGRlZnM+PHBhdHRlcm4gaWQ9ImdyaWQiIHg9IjAiIHk9IjAiIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCIgcGF0dGVyblVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHBhdGggZD0iTSA0MCAwIEwgMCAwIDAgNDAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzRmNDZlNSIgc3Ryb2tlLXdpZHRoPSIwLjUiIG9wYWNpdHk9IjAuMSIvPjwvcGF0dGVybj48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsbD0idXJsKCNncmlkKSIgLz48Y2lyY2xlIGN4PSIwIiBjeT0iNjAwIiByPSIzMDAiIGZpbGw9IiM0ZjQ2ZTUiIG9wYWNpdHk9IjAuMDMiLz48Y2lyY2xlIGN4PSI4MDAiIGN5PSIwIiByPSIyMDAiIGZpbGw9IiM0ZjQ2ZTUiIG9wYWNpdHk9IjAuMDMiLz48L3N2Zz4=";
+  const elegantWatermark = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgdmlld0JveD0iMCAwIDgwMCA2MDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGcgc3Ryb2tlPSIjMEY3NjZFIiBzdHJva2Utd2lkdGg9IjEiIGZpbGw9Im5vbmUiIG9wYWNpdHk9IjAuMSI+PHJlY3QgeD0iNTAiIHk9IjUwIiB3aWR0aD0iNzAwIiBoZWlnaHQ9IjUwMCIgcng9IjIwIiAvPjxyZWN0IHg9IjYwIiB5PSI2MCIgd2lkdGg9IjY4MCIgaGVpZ2h0PSI0ODAiIHJ4PSIxNSIgc3Ryb2tlLWRhc2hhcnJheT0iNCA0IiAvPjxjaXJjbGUgY3g9IjQwMCIgY3k9IjMwMCIgcj0iMTUwIiAvPjxwYXRoIGQ9Ik0gMjUwIDMwMCBRIDQwMCAxNTAgNTUwIDMwMCIgLz48cGF0aCBkPSJNIDI1MCAzMDAgUSA0MDAgNDUwIDU1MCAzMDAiIC8+PC9nPjwvc3ZnPg==";
 
+  // ... (useEffect hooks for resize, mouse move, etc. remain the same) ...
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current) {
@@ -117,8 +165,9 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
         const clientX = 'touches' in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
         const clientY = 'touches' in e ? e.touches[0].clientY : (e as MouseEvent).clientY;
 
-        const deltaX = clientX - dragStart.x;
-        const deltaY = clientY - dragStart.y;
+        // Adjust delta for zoom level
+        const deltaX = (clientX - dragStart.x) / zoomLevel;
+        const deltaY = (clientY - dragStart.y) / zoomLevel;
 
         setCropBox(prev => {
             let newBox = { ...prev };
@@ -173,122 +222,217 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
         window.removeEventListener('mouseup', handleWindowUp);
         window.removeEventListener('touchend', handleWindowUp);
     };
-  }, [interactionMode, dragStart, initialBox, imgDimensions]);
+  }, [interactionMode, dragStart, initialBox, imgDimensions, zoomLevel]);
 
   const handleDownload = async () => {
       if (!certificateRef.current) return;
       setIsGenerating(true);
-      const original = certificateRef.current;
-      const clone = original.cloneNode(true) as HTMLElement;
       
-      const noPrintEls = clone.querySelectorAll('.no-print');
-      noPrintEls.forEach(el => el.remove());
-      
-      clone.classList.remove('shadow-2xl', 'rounded-xl', 'my-8');
-      clone.style.boxShadow = 'none';
-      clone.style.borderRadius = '0';
-      clone.style.fontFeatureSettings = '"kern" 1, "liga" 1';
-      clone.style.transform = 'none';
-      clone.style.margin = '0';
-      clone.style.width = '1123px';
-      clone.style.height = '794px';
-      clone.style.maxWidth = 'none';
-      clone.style.maxHeight = 'none';
-      
-      const idElement = clone.querySelector('.certificate-id-container');
-      if (idElement) {
-          (idElement as HTMLElement).style.position = 'relative';
-          (idElement as HTMLElement).style.zIndex = '50';
-      }
-      
-      const originalLogo = original.querySelector('img[alt="Deepmetrics Analytics Institute"]') as HTMLImageElement;
-      const cloneLogo = clone.querySelector('img[alt="Deepmetrics Analytics Institute"]') as HTMLImageElement;
-      
-      if (originalLogo && cloneLogo) {
-          try {
-              const canvas = document.createElement('canvas');
-              canvas.width = 1200; 
-              canvas.height = 300; 
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                  ctx.imageSmoothingEnabled = true;
-                  ctx.imageSmoothingQuality = 'high';
-                  if (originalLogo.complete) {
-                     ctx.drawImage(originalLogo, 0, 0, canvas.width, canvas.height);
-                     cloneLogo.src = canvas.toDataURL('image/png', 1.0);
-                  } else {
-                     await new Promise((resolve) => {
-                         originalLogo.onload = resolve;
-                         originalLogo.onerror = resolve;
-                     });
-                     ctx.drawImage(originalLogo, 0, 0, canvas.width, canvas.height);
-                     cloneLogo.src = canvas.toDataURL('image/png', 1.0);
-                  }
-              }
-          } catch(e) {
-              console.warn("Logo rasterization failed", e);
-          }
-          cloneLogo.style.width = '512px';
-          cloneLogo.style.height = '128px';
-          cloneLogo.style.maxWidth = 'none';
-      }
-
-      const container = document.createElement('div');
-      container.style.position = 'fixed';
-      container.style.top = '-10000px'; 
-      container.style.left = '0';
-      container.style.width = '1123px';
-      container.style.height = '794px';
-      container.style.zIndex = '-9999';
-      container.appendChild(clone);
-      document.body.appendChild(container);
-
-      const filename = `Certificate - ${user.name} - ${course.title}.pdf`;
-      const pdfScale = downloadQuality === 'high' ? 4 : 2;
-      
-      const opt = {
-        margin: 0,
-        filename: filename,
-        image: { type: 'png', quality: 1.0 }, 
-        enableLinks: false,
-        html2canvas: { 
-            scale: pdfScale,
-            useCORS: true, 
-            logging: false,
-            letterRendering: true,
-            allowTaint: true,
-            scrollY: 0,
-            scrollX: 0,
-            width: 1123,
-            height: 794,
-            windowWidth: 1123,
-            windowHeight: 794,
-            backgroundColor: '#ffffff'
-        },
-        jsPDF: { 
-            unit: 'px', 
-            format: [1123, 794], 
-            orientation: 'landscape', 
-            compress: true,
-            hotfixes: ['px_scaling'] 
-        }
-      };
-
       try {
-          if (window.html2pdf) {
-             await new Promise(resolve => setTimeout(resolve, 800));
-             await window.html2pdf().set(opt).from(clone).save();
-          } else {
-              window.print();
-          }
+        // 1. Create Clone
+        const original = certificateRef.current;
+        const clone = original.cloneNode(true) as HTMLElement;
+        
+        // 2. Clean up Clone for PDF generation
+        const noPrintEls = clone.querySelectorAll('.no-print');
+        noPrintEls.forEach(el => el.remove());
+
+        // Handle ID field cleanup for PDF if it was in editing mode (unlikely but safe)
+        const idInput = clone.querySelector('input[name="certificateId"]');
+        if (idInput) {
+            const span = document.createElement('span');
+            span.textContent = (idInput as HTMLInputElement).value;
+            span.className = idInput.className;
+            // Copy computed styles if needed, or rely on class names
+            Object.assign(span.style, {
+                fontFamily: '"Courier New", Courier, monospace',
+                border: '1px solid rgba(0,0,0,0.2)',
+                backgroundColor: 'rgba(255,255,255,0.4)',
+                padding: '4px 12px',
+                borderRadius: '4px'
+            });
+            idInput.replaceWith(span);
+        }
+
+        // Improve Noise Texture handling for PDF
+        // Instead of removing, we set blend mode to normal and reduce opacity
+        // This prevents black boxes while keeping the texture
+        const noiseDiv = clone.querySelector('div[style*="noiseTexture"]');
+        if (noiseDiv) {
+            (noiseDiv as HTMLElement).style.mixBlendMode = 'normal';
+            (noiseDiv as HTMLElement).style.opacity = '0.05'; // Very subtle on white background
+        }
+
+        // Remove any element with radial-gradient in style (signature overlay)
+        // This often causes artifacts in PDF
+        const gradientOverlays = clone.querySelectorAll('div[style*="radial-gradient"]');
+        gradientOverlays.forEach(el => el.remove());
+        
+        // Reset container styles for the PDF format
+        clone.classList.remove('shadow-2xl', 'rounded-xl', 'my-8');
+        Object.assign(clone.style, {
+            boxShadow: 'none',
+            borderRadius: '0',
+            fontFeatureSettings: '"kern" 1, "liga" 1',
+            transform: 'none',
+            margin: '0',
+            width: '1123px',
+            height: '794px',
+            maxWidth: 'none',
+            maxHeight: 'none',
+            position: 'relative',
+            backgroundColor: 'white',
+            overflow: 'hidden'
+        });
+        
+        // 3. Handle ID Element layering
+        const idElement = clone.querySelector('.certificate-id-container');
+        if (idElement) {
+            (idElement as HTMLElement).style.position = 'relative';
+            (idElement as HTMLElement).style.zIndex = '50';
+        }
+        
+        const cloneLogo = clone.querySelector('img[alt="Deepmetrics Analytics Institute"]') as HTMLImageElement;
+        const cloneSig = clone.querySelector('img[alt="Instructor Signature"]') as HTMLImageElement;
+        
+        const originalLogo = original.querySelector('img[alt="Deepmetrics Analytics Institute"]') as HTMLImageElement;
+        const originalSig = original.querySelector('img[alt="Instructor Signature"]') as HTMLImageElement;
+
+        const transferImage = async (
+            source: HTMLImageElement, 
+            target: HTMLImageElement, 
+            options: { width?: number; height?: number; removeWhiteBg?: boolean } = {}
+        ) => {
+             if (source && target && source.complete && source.naturalWidth > 0) {
+                 const canvas = document.createElement('canvas');
+                 canvas.width = options.width || source.naturalWidth;
+                 canvas.height = options.height || source.naturalHeight;
+                 const ctx = canvas.getContext('2d');
+                 if (ctx) {
+                     ctx.imageSmoothingEnabled = true;
+                     ctx.imageSmoothingQuality = 'high';
+                     ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+                     
+                     if (options.removeWhiteBg) {
+                        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        const data = imageData.data;
+                        for (let i = 0; i < data.length; i += 4) {
+                            const r = data[i];
+                            const g = data[i + 1];
+                            const b = data[i + 2];
+                            
+                            const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                            
+                            if (luminance > 230) {
+                                data[i + 3] = 0; 
+                            } else if (luminance > 200) {
+                                const alpha = 255 * (1 - (luminance - 200) / 30);
+                                if (alpha < data[i + 3]) {
+                                    data[i + 3] = alpha;
+                                }
+                            }
+                        }
+                        ctx.putImageData(imageData, 0, 0);
+                     }
+
+                     target.src = canvas.toDataURL('image/png');
+                     target.srcset = '';
+                 }
+             }
+        };
+
+        // 4. Rasterize Logo (High Res for PDF)
+        if (originalLogo && cloneLogo) {
+            if (!originalLogo.complete) await new Promise(r => { originalLogo.onload = r; originalLogo.onerror = r; });
+            // Increase resolution for crisper logo
+            await transferImage(originalLogo, cloneLogo, { width: 2048, height: 512 });
+            cloneLogo.style.width = '512px';
+            cloneLogo.style.height = '128px';
+        }
+
+        // 5. Rasterize Signature
+        if (originalSig && cloneSig) {
+            if (!originalSig.complete) await new Promise(r => { originalSig.onload = r; originalSig.onerror = r; });
+            
+            await transferImage(originalSig, cloneSig, { removeWhiteBg: true });
+            // Ensure visual styles match original rendering constraints
+            cloneSig.style.maxHeight = '100px'; 
+            cloneSig.style.maxWidth = '100%';
+            cloneSig.style.objectFit = 'contain';
+            // CRITICAL: Remove mix-blend-mode from clone as it causes PDF artifacts
+            cloneSig.classList.remove('mix-blend-multiply');
+            cloneSig.style.mixBlendMode = 'normal';
+        }
+
+        // 6. Mount Clone in a hidden container
+        const container = document.createElement('div');
+        container.style.position = 'fixed';
+        container.style.left = '-10000px';
+        container.style.top = '0';
+        container.style.width = '1123px';
+        container.style.height = '794px';
+        container.appendChild(clone);
+        document.body.appendChild(container);
+
+        // 7. Generate PDF
+        const filename = `Certificate - ${user.name} - ${course.title}.pdf`;
+        const pdfScale = downloadQuality === 'high' ? 4 : 2;
+        
+        const opt = {
+            margin: 0,
+            filename: filename,
+            image: { type: 'png', quality: 1.0 },
+            enableLinks: false,
+            html2canvas: {
+                scale: pdfScale,
+                useCORS: true,
+                logging: false,
+                letterRendering: true, // Improved text quality
+                allowTaint: true, 
+                width: 1123,
+                height: 794,
+                scrollY: 0,
+                scrollX: 0,
+                windowWidth: 1123,
+                windowHeight: 794,
+                backgroundColor: '#ffffff',
+                imageTimeout: 20000,
+                removeContainer: true
+            },
+            jsPDF: {
+                unit: 'px',
+                format: [1123, 794],
+                orientation: 'landscape',
+                compress: true
+            }
+        };
+
+        // Increased wait time to ensure all assets/fonts are ready
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        if (window.html2pdf) {
+            await window.html2pdf().set(opt).from(clone).save();
+        } else {
+            document.body.removeChild(container);
+            window.print();
+            return;
+        }
+
+        if (document.body.contains(container)) {
+            document.body.removeChild(container);
+        }
+
       } catch (error) {
-          console.error('PDF Generation Error:', error);
-          alert('Could not generate PDF directly. Please use the Print button.');
+          console.error('PDF Generation Failed', error);
+          alert('Failed to generate PDF. Please use the Print option.');
       } finally {
-          document.body.removeChild(container);
           setIsGenerating(false);
       }
   };
+
+  // ... rest of the component (handlePrint, etc.)
+  
+  // (Assuming no changes to handlePrint and subsequent logic, continuing to Return Block)
 
   const handlePrint = () => {
       window.print();
@@ -320,6 +464,9 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
           setOriginalImage(result);
           setPendingImage(result);
           setIsCroppedPreview(false);
+          setZoomLevel(1); 
+          setRemoveBackground(true);
+          setIsAiEnhanced(false);
           setShowCropModal(true);
       };
       reader.onerror = () => { setUploadError('Error reading file.'); };
@@ -339,6 +486,8 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
       if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // ... (Image load, maximize crop, mouse down, ai enhance, generate cropped image, apply crop, reset crop, close crop, save crop functions - no changes)
+  
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
       const img = e.currentTarget;
       const displayWidth = img.width;
@@ -353,7 +502,6 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
           naturalHeight
       });
 
-      // Init crop box centered with max possible size maintaining aspect ratio
       let boxWidth = displayWidth * 0.8;
       let boxHeight = boxWidth / SIGNATURE_ASPECT_RATIO;
 
@@ -370,6 +518,26 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
       });
   };
 
+  const handleMaximizeCrop = () => {
+      const { width, height } = imgDimensions;
+      if (!width || !height) return;
+
+      let boxWidth = width;
+      let boxHeight = boxWidth / SIGNATURE_ASPECT_RATIO;
+
+      if (boxHeight > height) {
+          boxHeight = height;
+          boxWidth = boxHeight * SIGNATURE_ASPECT_RATIO;
+      }
+
+      setCropBox({
+          x: (width - boxWidth) / 2,
+          y: (height - boxHeight) / 2,
+          width: boxWidth,
+          height: boxHeight
+      });
+  };
+
   const handleMouseDown = (e: React.MouseEvent | React.TouchEvent, mode: 'move' | 'resize') => {
       e.preventDefault();
       e.stopPropagation();
@@ -380,6 +548,45 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
       setDragStart({ x: clientX, y: clientY });
       setInitialBox(cropBox);
   };
+  
+  const handleAiEnhance = async () => {
+    if (!imgRef.current) return;
+    setIsAiProcessing(true);
+    setUploadError(null);
+    try {
+        const scaleX = imgDimensions.naturalWidth / imgDimensions.width;
+        const scaleY = imgDimensions.naturalHeight / imgDimensions.height;
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = cropBox.width * scaleX;
+        canvas.height = cropBox.height * scaleY;
+        const ctx = canvas.getContext('2d');
+        
+        if (ctx) {
+             ctx.drawImage(
+              imgRef.current,
+              cropBox.x * scaleX,
+              cropBox.y * scaleY,
+              cropBox.width * scaleX,
+              cropBox.height * scaleY,
+              0, 0, canvas.width, canvas.height
+            );
+            
+            const croppedBase64 = canvas.toDataURL('image/png');
+            const cleanedImage = await cleanUpSignatureWithAI(croppedBase64);
+            
+            setPendingImage(cleanedImage);
+            setIsCroppedPreview(false);
+            setRemoveBackground(true);
+            setIsAiEnhanced(true);
+        }
+    } catch (e) {
+        console.error(e);
+        setUploadError('AI Enhancement failed. Check your connection or API key.');
+    } finally {
+        setIsAiProcessing(false);
+    }
+  };
 
   const generateCroppedImage = () => {
       if (!imgRef.current) return null;
@@ -388,7 +595,6 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
       const scaleY = imgDimensions.naturalHeight / imgDimensions.height;
 
       const canvas = document.createElement('canvas');
-      // High resolution output (3x standard)
       canvas.width = 512 * 3; 
       canvas.height = 224 * 3;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -404,27 +610,28 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
               0, 0, canvas.width, canvas.height
           );
 
-          // Automatic Background Removal
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imageData.data;
-          
-          for (let i = 0; i < data.length; i += 4) {
-              const r = data[i];
-              const g = data[i + 1];
-              const b = data[i + 2];
+          if (removeBackground) {
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const data = imageData.data;
               
-              const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-              
-              if (luminance > 230) {
-                  data[i + 3] = 0; 
-              } else if (luminance > 200) {
-                  const alpha = 255 * (1 - (luminance - 200) / 30);
-                  if (alpha < data[i + 3]) {
-                      data[i + 3] = alpha;
+              for (let i = 0; i < data.length; i += 4) {
+                  const r = data[i];
+                  const g = data[i + 1];
+                  const b = data[i + 2];
+                  
+                  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                  
+                  if (luminance > 230) {
+                      data[i + 3] = 0; 
+                  } else if (luminance > 200) {
+                      const alpha = 255 * (1 - (luminance - 200) / 30);
+                      if (alpha < data[i + 3]) {
+                          data[i + 3] = alpha;
+                      }
                   }
               }
+              ctx.putImageData(imageData, 0, 0);
           }
-          ctx.putImageData(imageData, 0, 0);
           return canvas.toDataURL('image/png');
       }
       return null;
@@ -441,6 +648,9 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
   const handleResetCrop = () => {
       setPendingImage(originalImage);
       setIsCroppedPreview(false);
+      setZoomLevel(1);
+      setRemoveBackground(true);
+      setIsAiEnhanced(false);
   };
 
   const handleCloseCrop = () => {
@@ -448,6 +658,10 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
       setPendingImage(null);
       setOriginalImage(null);
       setIsCroppedPreview(false);
+      setZoomLevel(1);
+      setRemoveBackground(true);
+      setIsAiProcessing(false);
+      setIsAiEnhanced(false);
   };
 
   const handleCropSave = () => {
@@ -467,6 +681,8 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
       }
   };
 
+  // ... (Theme logic - no changes)
+  
   const getTheme = () => {
       switch (template) {
           case 'modern':
@@ -486,23 +702,23 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
               };
           case 'elegant':
               return {
-                  bg: "bg-stone-50",
-                  primary: "text-emerald-950",
-                  secondary: "text-stone-600",
-                  accent: "text-emerald-800",
-                  accentBorder: "border-emerald-800",
-                  accentBg: "bg-emerald-800",
+                  bg: "bg-[#F5F5F4]", 
+                  primary: "text-[#1C1917]", 
+                  secondary: "text-[#57534E]", 
+                  accent: "text-[#0F766E]", 
+                  accentBorder: "border-[#0F766E]",
+                  accentBg: "bg-[#0F766E]",
                   fontHead: "font-serif",
                   fontBody: "font-sans",
-                  sealGradient: "from-emerald-400 via-emerald-600 to-emerald-900",
-                  sealInner: "from-emerald-500 to-emerald-800",
-                  sealBorder: "border-emerald-50",
-                  accentColor: "#065f46"
+                  sealGradient: "from-[#14B8A6] via-[#0D9488] to-[#0F766E]",
+                  sealInner: "from-[#2DD4BF] to-[#0F766E]",
+                  sealBorder: "border-[#CCFBF1]",
+                  accentColor: "#0F766E"
               };
           case 'classic':
           default:
               return {
-                  bg: "bg-[#FAFAFA]", // Slightly warmer white
+                  bg: "bg-[#FAFAFA]", 
                   primary: "text-gray-900",
                   secondary: "text-gray-600",
                   accent: "text-[#B49126]",
@@ -588,29 +804,25 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
                       ></div>
                       
                       <div 
-                        className="absolute inset-0 z-0 pointer-events-none opacity-[0.03] bg-center bg-no-repeat"
+                        className="absolute inset-0 z-0 pointer-events-none bg-center bg-no-repeat"
                         style={{ 
                             backgroundImage: `url("${
                                 template === 'modern' ? modernWatermark : 
                                 template === 'elegant' ? elegantWatermark : 
                                 classicWatermark
                             }")`,
-                            backgroundSize: '65%'
+                            backgroundSize: template === 'classic' ? '65%' : 'cover'
                         }}
                       ></div>
 
                       {/* --- CLASSIC TEMPLATE DECORATION --- */}
                       {template === 'classic' && (
                           <>
-                            {/* Detailed Gold Frame */}
                             <div className="absolute inset-8 border-[6px] border-[#B49126] z-10 pointer-events-none" style={{ borderStyle: 'double' }}></div>
                             <div className="absolute inset-10 border border-[#B49126] opacity-30 z-10 pointer-events-none"></div>
                             
-                            {/* Inner Decorative Box */}
                             <div className="absolute top-16 bottom-16 left-16 right-16 border border-[#B49126] opacity-20 z-10 pointer-events-none"></div>
 
-                            {/* Ornate Corner Elements (SVG) */}
-                            {/* Use explicit positioning divs for consistent export */}
                             {[
                                 { top: 32, left: 32, rot: 0 },
                                 { top: 32, right: 32, rot: 90 },
@@ -646,23 +858,10 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
                       {/* --- MODERN TEMPLATE DECORATION --- */}
                       {template === 'modern' && (
                           <>
-                             {/* Top Accent Bar */}
                              <div className="absolute top-0 left-0 right-0 h-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-600 z-10"></div>
-                             
-                             {/* Bottom Accent Bar */}
                              <div className="absolute bottom-0 left-0 right-0 h-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-600 z-10"></div>
-
-                             {/* Tech Background Pattern */}
-                             <div 
-                                className="absolute inset-0 z-0 opacity-[0.03] pointer-events-none"
-                                style={{ backgroundImage: `url("${dotPattern}")` }}
-                             ></div>
-
-                             {/* Sidebar Accent */}
                              <div className="absolute left-0 top-12 bottom-12 w-2 bg-indigo-50 z-10"></div>
                              <div className="absolute left-2 top-20 bottom-20 w-1 bg-indigo-100 z-10"></div>
-                             
-                             {/* Corner Accents */}
                              <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-indigo-50 to-transparent pointer-events-none"></div>
                              <div className="absolute bottom-0 left-0 w-32 h-32 bg-gradient-to-tr from-indigo-50 to-transparent pointer-events-none"></div>
                           </>
@@ -670,7 +869,14 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
 
                       {/* --- ELEGANT TEMPLATE DECORATION --- */}
                       {template === 'elegant' && (
-                          <div className={`absolute inset-10 border-4 border-double ${theme.accentBorder} z-10 pointer-events-none rounded-lg`}></div>
+                          <>
+                            <div className={`absolute inset-10 border border-[${theme.accentColor}] opacity-20 z-10 pointer-events-none`}></div>
+                            <div className={`absolute inset-8 border-2 border-double ${theme.accentBorder} z-10 pointer-events-none rounded-sm`}></div>
+                            <div className="absolute top-8 left-8 w-16 h-16 border-t-2 border-l-2 z-20 pointer-events-none" style={{ borderColor: theme.accentColor }}></div>
+                            <div className="absolute top-8 right-8 w-16 h-16 border-t-2 border-r-2 z-20 pointer-events-none" style={{ borderColor: theme.accentColor }}></div>
+                            <div className="absolute bottom-8 left-8 w-16 h-16 border-b-2 border-l-2 z-20 pointer-events-none" style={{ borderColor: theme.accentColor }}></div>
+                            <div className="absolute bottom-8 right-8 w-16 h-16 border-b-2 border-r-2 z-20 pointer-events-none" style={{ borderColor: theme.accentColor }}></div>
+                          </>
                       )}
 
                       {/* --- MAIN CONTENT --- */}
@@ -740,12 +946,19 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
                                     )}
 
                                     {course.signatureImage ? (
-                                        <img 
-                                            src={course.signatureImage} 
-                                            alt="Instructor Signature" 
-                                            className="max-h-full max-w-full object-contain select-none mix-blend-multiply pb-2" 
-                                            draggable={false}
-                                        />
+                                        <div className="relative w-full flex justify-center items-end pb-2">
+                                            <img 
+                                                src={course.signatureImage} 
+                                                alt="Instructor Signature" 
+                                                className="max-h-[90px] max-w-full object-contain select-none mix-blend-multiply z-10 relative" 
+                                                draggable={false}
+                                            />
+                                            {/* Reduced opacity of gradient to let signature pop more */}
+                                            <div 
+                                                className="absolute inset-0 pb-2 pointer-events-none mix-blend-multiply z-20"
+                                                style={{ background: 'radial-gradient(closest-side, transparent 50%, rgba(0,0,0,0.05) 100%)' }}
+                                            ></div>
+                                        </div>
                                     ) : (
                                         <span className={`font-signature text-5xl ${theme.accent} text-center leading-none drop-shadow-sm pb-2`}>
                                             {course.instructor}
@@ -766,7 +979,8 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
                              </div>
 
                              <div className="flex flex-col items-center -mb-6">
-                                 <div className={`w-36 h-36 rounded-full bg-gradient-to-br ${theme.sealGradient} p-1 shadow-xl flex items-center justify-center relative`}>
+                                 {/* Added class for easier targeting if needed later, but relying on standard rendering now */}
+                                 <div className={`w-36 h-36 rounded-full bg-gradient-to-br ${theme.sealGradient} p-1 shadow-xl flex items-center justify-center relative certificate-seal-node`}>
                                      <div className={`absolute -bottom-4 w-12 h-12 rotate-45 bg-gradient-to-br ${theme.sealGradient} -z-10`}></div>
                                      <div className={`w-full h-full rounded-full border-[3px] border-dashed ${theme.sealBorder} flex items-center justify-center`}>
                                         <div className={`w-28 h-28 rounded-full bg-gradient-to-br ${theme.sealInner} flex items-center justify-center flex-col shadow-inner`}>
@@ -790,16 +1004,74 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
                              </div>
                          </div>
                          
-                         <div className="w-full text-center mt-4 certificate-id-container">
-                             <p className={`text-[10px] tracking-widest uppercase opacity-60 ${theme.secondary} flex items-center justify-center`}>
-                                 Certificate ID: <span className="font-mono font-bold text-sm tracking-widest ml-2 px-3 py-1 border border-current/20 rounded bg-white/30 shadow-sm">{certificateId}</span>
-                             </p>
+                         <div className="w-full text-center mt-4 certificate-id-container flex flex-col items-center justify-center relative">
+                             <div className={`text-[10px] tracking-widest uppercase opacity-60 ${theme.secondary} flex items-center justify-center gap-2`}>
+                                 <span>Certificate ID:</span>
+                                 
+                                 {isEditingId ? (
+                                     <div className="relative flex items-center">
+                                         <input 
+                                            name="certificateId"
+                                            value={tempId}
+                                            onChange={handleIdChange}
+                                            className={`font-bold text-sm tracking-widest px-2 py-1 border rounded shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase w-72 ${
+                                                idError ? 'border-red-500 bg-red-50 text-red-900' : 'border-current/20 bg-white/80'
+                                            }`}
+                                            style={{ fontFamily: '"Courier New", Courier, monospace' }}
+                                            placeholder="DMAI-YYYY-XXXX-XXXX-XXXX"
+                                            autoFocus
+                                         />
+                                         <div className="flex gap-1 ml-2 no-print">
+                                             <button 
+                                                onClick={saveId} 
+                                                disabled={!!idError}
+                                                className={`p-1 rounded-full text-white shadow-sm transition-colors ${
+                                                    !!idError ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'
+                                                }`}
+                                             >
+                                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                             </button>
+                                             <button 
+                                                onClick={cancelEditId} 
+                                                className="p-1 rounded-full bg-red-500 text-white shadow-sm hover:bg-red-600 transition-colors"
+                                             >
+                                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                             </button>
+                                         </div>
+                                     </div>
+                                 ) : (
+                                     <div className="flex items-center group relative">
+                                         <span 
+                                            className="font-bold text-sm tracking-widest ml-1 px-3 py-1 border border-current/20 rounded bg-white/40 shadow-sm" 
+                                            style={{ fontFamily: '"Courier New", Courier, monospace' }}
+                                         >
+                                             {displayId}
+                                         </span>
+                                         {isAdmin && (
+                                             <button 
+                                                onClick={startEditId}
+                                                className="absolute -right-8 opacity-0 group-hover:opacity-100 transition-opacity p-1 text-indigo-600 hover:bg-indigo-50 rounded-full no-print"
+                                                title="Edit Certificate ID"
+                                             >
+                                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                             </button>
+                                         )}
+                                     </div>
+                                 )}
+                             </div>
+                             
+                             {idError && isEditingId && (
+                                 <div className="text-red-500 text-[10px] font-bold mt-1 bg-white/90 px-2 py-0.5 rounded shadow-sm border border-red-200 animate-pulse absolute top-full">
+                                     {idError}
+                                 </div>
+                             )}
                          </div>
                       </div>
                    </div>
                </div>
            </div>
 
+           {/* ... Footer Actions ... */}
            <div className="flex gap-4 items-center no-print flex-wrap justify-center">
               <Button 
                 variant="outline" 
@@ -840,8 +1112,12 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
               </Button>
            </div>
            
+           {/* ... Admin Section & Modals ... */}
+           {/* (Content omitted for brevity but preserved in final file if needed, reusing previous logic for brevity here as it wasn't changed) */}
+           {/* To ensure full file integrity, I will paste the rest of the file logic that follows 'Footer Actions' */}
+           
            {isAdmin && (
-             <div className="w-full max-w-2xl p-6 bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700 no-print">
+             <div className="w-full max-w-2xl p-6 bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700 no-print mt-8">
                  <div className="flex items-center justify-between mb-4">
                      <h3 className="text-white font-bold text-lg flex items-center gap-2">
                          <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
@@ -901,6 +1177,7 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
 
        {showSignatureManager && allCourses && (
            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in no-print">
+               {/* ... (Signature Manager UI remains unchanged) ... */}
                <div className="bg-white rounded-xl shadow-2xl overflow-hidden max-w-4xl w-full max-h-[85vh] flex flex-col">
                    <div className="bg-indigo-900 px-6 py-4 border-b border-indigo-800 flex justify-between items-center">
                        <div className="flex items-center gap-3">
@@ -989,51 +1266,134 @@ export const Certificate: React.FC<CertificateProps> = ({ user, course, onClose,
                        </button>
                    </div>
                    
-                   <div className="p-8 flex flex-col items-center gap-6 overflow-y-auto flex-1">
+                   <div className="p-8 flex flex-col items-center gap-6 overflow-hidden flex-1 w-full">
                        {!isCroppedPreview && (
                             <p className="text-sm text-gray-500 bg-blue-50 text-blue-800 px-3 py-1 rounded-full text-xs font-semibold">
                                     Drag box to position • Drag corner to resize
                             </p>
                        )}
-                       
-                       <div className="relative inline-block overflow-hidden select-none touch-none">
-                           <img 
-                                ref={imgRef} 
-                                src={pendingImage} 
-                                onLoad={handleImageLoad} 
-                                className="max-w-full max-h-[60vh] block pointer-events-none select-none" 
-                                alt="Crop Source"
-                                draggable={false}
-                           />
-                           
-                           {!isCroppedPreview && (
-                               <div 
-                                  className="absolute border-2 border-dashed border-indigo-400 cursor-move"
-                                  style={{
-                                     left: cropBox.x,
-                                     top: cropBox.y,
-                                     width: cropBox.width,
-                                     height: cropBox.height,
-                                     boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)'
-                                  }}
-                                  onMouseDown={(e) => handleMouseDown(e, 'move')}
-                                  onTouchStart={(e) => handleMouseDown(e, 'move')}
-                               >
-                                  <div 
-                                    className="absolute bottom-0 right-0 w-6 h-6 bg-indigo-500 cursor-se-resize flex items-center justify-center z-10 hover:bg-indigo-600 transition-colors shadow-sm"
-                                    onMouseDown={(e) => handleMouseDown(e, 'resize')}
-                                    onTouchStart={(e) => handleMouseDown(e, 'resize')}
-                                  >
-                                     <svg className="w-3 h-3 text-white transform rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
-                                  </div>
+
+                       {!isCroppedPreview && (
+                           <div className="flex flex-col gap-3 w-full max-w-md">
+                               <div className="flex items-center gap-4 w-full bg-gray-50 p-2 rounded-lg border border-gray-200 shadow-sm">
+                                   <span className="text-xs font-medium text-gray-500 flex items-center gap-1">
+                                       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                                       Zoom
+                                   </span>
+                                   <input 
+                                       type="range" 
+                                       min="1" 
+                                       max="3" 
+                                       step="0.1" 
+                                       value={zoomLevel} 
+                                       onChange={(e) => setZoomLevel(parseFloat(e.target.value))}
+                                       className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                                   />
+                                   <span className="text-xs font-mono text-gray-600 w-8 text-right">{zoomLevel.toFixed(1)}x</span>
                                </div>
-                           )}
+
+                               {!isAiEnhanced && (
+                                   <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg flex items-start gap-3">
+                                        <div className="bg-indigo-100 p-1.5 rounded-full text-indigo-600 mt-0.5">
+                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                        </div>
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-indigo-900">AI Background Removal</h4>
+                                            <p className="text-xs text-indigo-700 mt-1">
+                                                Use AI to automatically remove background noise and make the signature transparent.
+                                            </p>
+                                            <Button 
+                                                variant="primary" 
+                                                size="sm"
+                                                onClick={handleAiEnhance} 
+                                                disabled={isAiProcessing}
+                                                className="mt-2 text-xs py-1.5"
+                                            >
+                                                {isAiProcessing ? 'Processing...' : 'Enhance & Make Transparent'}
+                                            </Button>
+                                        </div>
+                                   </div>
+                               )}
+                               
+                               {isAiEnhanced && (
+                                   <div className="p-3 bg-green-50 border border-green-100 rounded-lg flex items-center gap-3">
+                                       <div className="bg-green-100 p-1 rounded-full text-green-600">
+                                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                       </div>
+                                       <div>
+                                           <h4 className="text-sm font-semibold text-green-900">AI Enhancement Active</h4>
+                                           <p className="text-xs text-green-700">Signature cleaned and background removed.</p>
+                                       </div>
+                                       <button onClick={handleResetCrop} className="ml-auto text-xs text-gray-500 hover:text-red-600 underline">Undo</button>
+                                   </div>
+                               )}
+
+                               <label className="flex items-center gap-2 px-1 cursor-pointer select-none group w-fit mx-auto sm:mx-0 mt-2">
+                                    <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${removeBackground ? 'bg-indigo-600 border-indigo-600' : 'bg-white border-gray-300'}`}>
+                                        {removeBackground && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                                    </div>
+                                    <input 
+                                        type="checkbox" 
+                                        checked={removeBackground}
+                                        onChange={(e) => setRemoveBackground(e.target.checked)}
+                                        className="hidden"
+                                    />
+                                    <span className="text-sm text-gray-600 group-hover:text-indigo-700 transition-colors">Force Transparent Background</span>
+                               </label>
+                           </div>
+                       )}
+                       
+                       <div className="w-full overflow-auto flex-1 flex justify-center bg-gray-100/50 rounded border border-gray-100 relative">
+                           <div className="relative inline-block select-none touch-none origin-top-left transition-transform duration-100 ease-out"
+                                style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
+                           >
+                               <img 
+                                    ref={imgRef} 
+                                    src={pendingImage} 
+                                    onLoad={handleImageLoad} 
+                                    className="max-w-full block pointer-events-none select-none" 
+                                    alt="Crop Source"
+                                    draggable={false}
+                               />
+                               
+                               {!isCroppedPreview && (
+                                   <div 
+                                      className="absolute border-2 border-dashed border-indigo-400 cursor-move"
+                                      style={{
+                                         left: cropBox.x,
+                                         top: cropBox.y,
+                                         width: cropBox.width,
+                                         height: cropBox.height,
+                                         boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)'
+                                      }}
+                                      onMouseDown={(e) => handleMouseDown(e, 'move')}
+                                      onTouchStart={(e) => handleMouseDown(e, 'move')}
+                                   >
+                                      <div 
+                                        className="absolute bottom-0 right-0 w-6 h-6 bg-indigo-500 cursor-se-resize flex items-center justify-center z-10 hover:bg-indigo-600 transition-colors shadow-sm"
+                                        onMouseDown={(e) => handleMouseDown(e, 'resize')}
+                                        onTouchStart={(e) => handleMouseDown(e, 'resize')}
+                                      >
+                                         <svg className="w-3 h-3 text-white transform rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                                      </div>
+                                   </div>
+                               )}
+                           </div>
                        </div>
 
-                       <div className="flex gap-3 w-full justify-end pt-4 border-t border-gray-100 mt-auto">
+                       <div className="flex gap-3 w-full justify-end pt-4 border-t border-gray-100 mt-auto flex-shrink-0 flex-wrap">
                            <Button variant="outline" onClick={handleCloseCrop}>
                                Cancel
                            </Button>
+
+                           {!isCroppedPreview && (
+                               <Button variant="outline" onClick={handleMaximizeCrop} title="Reset selection to fit image">
+                                   <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                                   </svg>
+                                   Fit Selection
+                               </Button>
+                           )}
                            
                            {isCroppedPreview ? (
                                <Button variant="outline" onClick={handleResetCrop} className="text-indigo-600 border-indigo-200 hover:bg-indigo-50">
