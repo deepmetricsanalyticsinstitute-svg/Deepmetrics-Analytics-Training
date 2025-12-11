@@ -41,8 +41,8 @@ export const AIChat: React.FC<AIChatProps> = ({ courses }) => {
       
       let fullText = '';
       for await (const chunk of stream) {
-        // In @google/genai, chunk.text is a property
-        const chunkText = chunk.text || '';
+        // In @google/generative-ai, chunk.text() is a function
+        const chunkText = chunk.text();
         fullText += chunkText;
         
         setMessages(prev => {
